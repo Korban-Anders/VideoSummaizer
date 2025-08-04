@@ -7,8 +7,8 @@ along with timestamps for each segement.
 import os
 import argparse
 
-import tkinter as tk
-from tkinter import filedialog
+#import tkinter as tk
+#from tkinter import filedialog
 
 
 import re
@@ -72,24 +72,21 @@ def save_timestamped_transcript(start_stamp, end_stamp, text, output_path):
     output_path.write(text + "\n")
     output_path.write(end_stamp + "\n")
 
-# Path to local distilWhisper download
-model_path = os.path.dirname(os.path.abspath(__file__))
 
-if not os.path.exists(model_path):
-    print("Error: The specified model_path does not exist!")
-
-#load model and processor from file
-processor = AutoProcessor.from_pretrained(model_path, local_files_only=True)
-model = AutoModelForSpeechSeq2Seq.from_pretrained(model_path, local_files_only=True)
+#load model and processor from Hugging Face Hub
+model_name = "distil-whisper/distil-small.en"
+processor = AutoProcessor.from_pretrained(model_name)
+model = AutoModelForSpeechSeq2Seq.from_pretrained(model_name)
 
 #define device properly
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = model.to(device)
 
 #get audio file from stdin
 input_text_parser = argparse.ArgumentParser()
-input_text_parser.add_argument('text', type=str)
+input_text_parser.add_argument('audio_path', type=str)
 input_text_args = input_text_parser.parse_args()
-audio_path = input_text_args.text
+audio_path = input_text_args.audio_path
 
 audio, sr = librosa.load(audio_path, sr=16000)
     #sr is how many samples per second.
@@ -98,42 +95,41 @@ audio, sr = librosa.load(audio_path, sr=16000)
 segment_length = 30 * sr
 num_segments = int(np.ceil(len(audio) / segment_length))    #get the numnber of segments
 
-transcriptions = [] #empty list to fill within the loop
+#transcriptions = [] #empty list to fill within the loop
 
-transcript_save_file = open('output/audio_output.txt', 'w', encoding='utf-8')
-transcript_save_file.write("")  #empty out file so new transcript can be appended
-#process and transcribe each chunk
-for i in range(num_segments):
+os.makedirs('output', exist_ok=True)
+with open('output/audio_output.txt', 'w', encoding='utf-8') as transcript_save_file:
+    #process and transcribe each chunk
+    for i in range(num_segments):
 
-    start = i * segment_length  #beginning of segment i
-    end = min((i + 1) * segment_length, len(audio)) #end of segment i
-    chunk = audio[start:end]  #extract segment
-    #divide start and end by sr to get start and end times in seconds
+        start = i * segment_length  #beginning of segment i
+        end = min((i + 1) * segment_length, len(audio)) #end of segment i
+        chunk = audio[start:end]  #extract segment
+        #divide start and end by sr to get start and end times in seconds
 
-    #process chunk
-    inputs = processor(chunk,   #
-                       sampling_rate=16000,
-                       return_tensor="pt"
-    )
+        #process chunk
+        inputs = processor(audio = chunk,
+                        sampling_rate=16000,
+                        return_tensor="pt",
+                        padding = True
+        )
 
-    attention_mask = torch.ones_like(torch.tensor(inputs.input_features))
-        #ChatGPT recommendation for dummy attention mask
-        #all ones, just here to clear the error for not having one
-
-    input_features = torch.tensor(inputs.input_features).to(device)
+        input_features = torch.tensor(inputs["input_features"]).to(device)
         #pytorch tensor type, move to device
 
-    #infer
-    with torch.no_grad():
-        predicted_ids = model.generate(input_features, attention_mask=attention_mask.to(device))
+        attention_mask = inputs.get("attention_mask", None)
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device)
+            predicted_ids = model.generate(input_features, attention_mask=attention_mask)
+        else:
+            predicted_ids = model.generate(input_features)
 
-    #decode output, save to transcripts array
-    single_transcript = processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
-    single_transcript = re.sub(r"<\|.*?\|>", "", single_transcript).strip()
+        #decode output, save to transcripts array
+        single_transcript = processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
+        single_transcript = re.sub(r"<\|.*?\|>", "", single_transcript).strip()
         #remove string formatted tokens from output
 
-    start_timestamp = format_timestamp(start/sr)
-    end_timestamp = format_timestamp(end/sr)
-    save_timestamped_transcript(start_timestamp, end_timestamp, single_transcript, transcript_save_file)
+        start_timestamp = format_timestamp(start/sr)
+        end_timestamp = format_timestamp(end/sr)
+        save_timestamped_transcript(start_timestamp, end_timestamp, single_transcript, transcript_save_file)
 
-transcript_save_file.close()

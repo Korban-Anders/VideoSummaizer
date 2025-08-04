@@ -17,11 +17,14 @@ def ensure_installed(packages):
         try:
             importlib.import_module(pkg)
         except ImportError:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+            if pkg == "sentencepice":
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "--prefer-binary", pkg])
+            else:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
 
 # Basic packages
 ensure_installed(["gradio", "easyocr", "opencv-python", "numpy", "moviepy", "tqdm", 
-                  "sentence-transformers", "scikit-learn", "librosa"])
+                  "sentence-transformers", "scikit-learn", "librosa", "sentencepiece"])
 
 '''# Imports'''
 import gradio as gr
@@ -33,6 +36,39 @@ import os
 import math
 from moviepy import VideoFileClip
 from tqdm import tqdm
+
+'''# Splice Video'''
+def split_video_into_segments(input_path, segment_minutes=5):
+    video = VideoFileClip(input_path)
+    duration = video.duration  # in seconds
+
+    # Checks if the duration of the video is less than 15 minutes 
+    if duration <= segment_minutes * 60:
+        print("Video is shorter than or equal to 15 minutes. No split needed.")
+        return []
+
+    # Gets the total number of segements of the video
+    total_segments = math.ceil(duration / (segment_minutes * 60))
+    base_filename = os.path.splitext(os.path.basename(input_path))[0]
+    
+    output_files = []
+
+    for i in range(total_segments):
+        # Breaks the video into segments
+        start_time = i * segment_minutes * 60
+        end_time = min((i + 1) * segment_minutes * 60, duration)
+        segment = video.subclipped(start_time, end_time)
+        
+        # Saves Video Segments
+        output_path = f"{base_filename}_part{i + 1}.mp4"
+        segment.write_videofile(output_path, codec='libx264', audio_codec='aac', logger=None)
+        
+        output_files.append(output_path)
+        print(f"Saved segment {i + 1}: {start_time:.2f}s to {end_time:.2f}s -> {output_path}")
+
+    video.close()
+    print("Splitting complete.")
+    return output_files
 
 '''# Process Video'''
 def process_single_video(video_path):
@@ -121,92 +157,74 @@ def process_video(video_path):
 
     return combined_summary, output_file
 
-'''Process Audio'''
-def process_audio(audio_path):
-  '''
-  this function processes the audio from the video and returns a summary
-  '''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
-  #run whisper_test.py on audio_path and write transcript with timestamps to audio_output.txt
-  subprocess.run(['python', 'models/distilWhisper/whisper_test.py', audio_path],
+'''Extract Audio'''
+def extract_audio(video_path, audio_path = "output/temp_audio.wav"):
+    clip = VideoFileClip(video_path)
+    clip.audio.write_audiofile(audio_path, codec='pcm_s16le')
+    return audio_path
+
+'''Process Audio'''
+def process_audio(video_path):
+    '''
+    this function processes the audio from the video and returns a summary
+    '''
+    audio_path = extract_audio(video_path)
+    #run whisper_test.py on audio_path and write transcript with timestamps to audio_output.txt
+    subprocess.run(['python', 'models/whisper_test.py', audio_path],
                                         text=True,
                                         check=True)
 
-  #run paragraph_breaker.py: process contents of audio_output.txt, write results to segmented_output.txt
-  subprocess.run(['python', 'scripts/paragraph_breaker.py', '--input_file "output/audio_output.txt"'],
+    
+    #run paragraph_breaker.py: process contents of audio_output.txt, write results to segmented_output.txt
+    subprocess.run(['python', 'scripts/paragraph_breaker.py', '--input_file "output/audio_output.txt"'],
                                             text=True,
                                             check=True)
-
-  #run pegasus_test.py: summarize contents of segmented_output.txt and write summaries to summary_output.txt
-  subprocess.run(['python', 'models/distilPegasus/pegasus_test.py'],
+    
+    #run pegasus_test.py: summarize contents of segmented_output.txt and write summaries to summary_output.txt
+    subprocess.run(['python', 'models/bart_test.py'],
                                         check=True,
                                         text=True)
 
-  with open("output/summary_output.txt", 'r', encoding='utf-8') as summary_file:
-      lines = [line.strip() for line in summary_file]
-    
-  summary = []
-  for i in range(0, len(lines), 3):
-      
-    starts = lines[i].split("', '")
-    ends = lines[i+2].split("', '")
-    text = lines[i+1]
+    with open("output/summary_output.txt", 'r', encoding='utf-8') as summary_file:
+        lines = [line.strip() for line in summary_file]
 
-    starts = [star.replace("'", "").replace("[", "").replace("]", "") for star in starts]
-    ends = [en.replace("'", "").replace("[", "").replace("]", "") for en in ends]
-
-    starts = ["\t" + star + " to " for star in starts]
-    ends = [en + "\n" for en in ends]
-
-    timestamps = [star+en for star, en in zip(starts, ends)]
-    timestamps = "".join(timestamps)
-
-    text = text[2:-2]
-
-    summary.append(text + "\n" + timestamps)
-
-  audio_summary = "output/audio_summary.txt"
-  with open(audio_summary, 'w', encoding='utf-8') as file:
-    for summ in summary:
-      file.write(summ + "\n")
-
-  summary = "\n".join(summary)
-  return summary, audio_summary
-
-'''# Splice Video'''
-def split_video_into_segments(input_path, segment_minutes=5):
-    video = VideoFileClip(input_path)
-    duration = video.duration  # in seconds
-
-    # Checks if the duration of the video is less than 15 minutes 
-    if duration <= segment_minutes * 60:
-        print("Video is shorter than or equal to 15 minutes. No split needed.")
-        return []
-
-    # Gets the total number of segements of the video
-    total_segments = math.ceil(duration / (segment_minutes * 60))
-    base_filename = os.path.splitext(os.path.basename(input_path))[0]
-    
-    output_files = []
-
-    for i in range(total_segments):
-        # Breaks the video into segments
-        start_time = i * segment_minutes * 60
-        end_time = min((i + 1) * segment_minutes * 60, duration)
-        segment = video.subclipped(start_time, end_time)
+    summary = []
+    for i in range(0, len(lines), 3):
         
-        # Saves Video Segments
-        output_path = f"{base_filename}_part{i + 1}.mp4"
-        segment.write_videofile(output_path, codec='libx264', audio_codec='aac', logger=None)
-        
-        output_files.append(output_path)
-        print(f"Saved segment {i + 1}: {start_time:.2f}s to {end_time:.2f}s -> {output_path}")
+        starts = lines[i].split("', '")
+        ends = lines[i+2].split("', '")
+        text = lines[i+1]
 
-    video.close()
-    print("Splitting complete.")
-    return output_files
+        starts = [star.replace("'", "").replace("[", "").replace("]", "") for star in starts]
+        ends = [en.replace("'", "").replace("[", "").replace("]", "") for en in ends]
 
-'''# Process Video Segments'''
+        starts = ["\t" + star + " to " for star in starts]
+        ends = [en + "\n" for en in ends]
+
+        timestamps = [star+en for star, en in zip(starts, ends)]
+        timestamps = "".join(timestamps)
+
+        text = text[2:-2]
+
+        summary.append(text + "\n" + timestamps)
+
+    audio_summary = "output/audio_summary.txt"
+    with open(audio_summary, 'w', encoding='utf-8') as file:
+        for summ in summary:
+            file.write(summ + "\n")
+
+    summary = "\n".join(summary)
+    return summary, audio_summary
+
+
+'''Process Video and Audio Segments'''
+
+'''
+
 def process_segments(input_path):
     segments = split_video_into_segments(input_path)
 
@@ -250,6 +268,8 @@ def process_segments(input_path):
         combined_audio_file = ""
 
     return full_visual_summary, combined_vis_file, full_audio_summary, combined_audio_file
+
+'''
 
 '''# Gradio UI'''
 with gr.Blocks() as demo:

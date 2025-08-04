@@ -110,6 +110,8 @@ def topical_segmentation(topical_sentences, topical_clustering):
         topics_with_ts[i][1] = [entry[0] for entry in tts]
         topics_with_ts[i][2] = [entry[1] for entry in tts]
 
+
+
     return topics_with_ts
 
 def process_file(input_file):
@@ -139,7 +141,7 @@ def process_file(input_file):
 
     return segments
 
-input_file = "audio_output.txt"
+input_file = "output/audio_output.txt"
 segments = process_file(input_file)
 
 #load pre-trained embedding model
@@ -159,7 +161,7 @@ for seg in segments:
 
 #embed and then cluster sentences
 embeddings = model.encode(sentences, convert_to_numpy=True)
-clustering = DBSCAN(eps=0.5, min_samples=2, metric='cosine').fit(embeddings)
+clustering = DBSCAN(eps=0.7, min_samples=1, metric='cosine').fit(embeddings)
 '''
 eps: max distance between points in the same cluster
     smaller eps: smaller clusters, more specific topics
@@ -171,6 +173,10 @@ min_samples: minimum number of points to form a region
     increasing min_samples means fewer topics, with more sentences per topic
     default: 2
 '''
+
+print("Unique cluster labels:", set(clustering.labels_))
+print("Homeless (noise) sentences:", sum(1 for l in clustering.labels_ if l == -1))
+print("Total sentences:", len(clustering.labels_))
 
 test_array = []
 homeless_sentences = 0
@@ -185,7 +191,7 @@ for clust in clustering.labels_:
 
 topics = topical_segmentation(stamped_sentences, clustering)
 
-seg_sent_save_file = open("segmented_output.txt", 'w', encoding='utf-8')
+seg_sent_save_file = open("output/segmented_output.txt", 'w', encoding='utf-8')
 for top in topics:
     seg_sent_save_file.write(str(top[1]) + "\n")
     seg_sent_save_file.write(top[0] + "\n")
